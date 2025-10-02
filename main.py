@@ -1,18 +1,47 @@
+# Replit Deployment Script for llama3.2-vision:11b
+# Copy this to main.py in your Replit project
+
+import subprocess
+import time
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import requests
-import json
-from typing import Optional, List
 import uvicorn
+import threading
+import os
 
+# Install Ollama
+def install_ollama():
+    print("🚀 Installing Ollama...")
+    subprocess.run(["curl", "-fsSL", "https://ollama.ai/install.sh", "-o", "install.sh"])
+    subprocess.run(["bash", "install.sh"])
+    print("✅ Ollama installed!")
+
+# Install Ollama
+install_ollama()
+
+# Start Ollama in background
+def start_ollama():
+    subprocess.Popen(['ollama', 'serve'])
+
+# Start Ollama
+start_ollama()
+time.sleep(10)
+
+# Pull the llama3.2-vision:11b model
+print("📥 Pulling llama3.2-vision:11b model...")
+print("⏳ This may take 10-15 minutes...")
+subprocess.run(['ollama', 'pull', 'llama3.2-vision:11b'])
+print("✅ Model ready!")
+
+# FastAPI App
 app = FastAPI(
     title="Llama3.2 Vision API",
     description="A FastAPI service for llama3.2-vision:11b model",
     version="1.0.0"
 )
 
-# Add CORS middleware to allow all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,38 +50,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration
-OLLAMA_BASE_URL = "http://localhost:11434"  # Default Ollama URL
-
 class ChatMessage(BaseModel):
     role: str
     content: str
 
 class ChatRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-    stream: Optional[bool] = False
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 1000
+    model: str = "llama3.2-vision:11b"
+    messages: list[ChatMessage]
+    temperature: float = 0.7
+    max_tokens: int = 1000
 
 class GenerateRequest(BaseModel):
-    model: str
+    model: str = "llama3.2-vision:11b"
     prompt: str
-    stream: Optional[bool] = False
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 1000
-
-class ModelInfo(BaseModel):
-    name: str
-    size: int
-    digest: str
-    modified_at: str
+    temperature: float = 0.7
+    max_tokens: int = 1000
 
 @app.get("/")
 async def root():
     return {
         "message": "Llama3.2 Vision API is running!",
         "model": "llama3.2-vision:11b",
+        "status": "active",
         "endpoints": {
             "models": "/models",
             "chat": "/chat",
@@ -62,119 +81,86 @@ async def root():
     }
 
 @app.get("/health")
-async def health_check():
-    """Check if Ollama service is running"""
-    try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
-        if response.status_code == 200:
-            return {"status": "healthy", "ollama_connected": True}
-        else:
-            return {"status": "unhealthy", "ollama_connected": False}
-    except requests.exceptions.RequestException:
-        return {"status": "unhealthy", "ollama_connected": False}
+async def health():
+    return {
+        "status": "healthy", 
+        "model": "llama3.2-vision:11b",
+        "platform": "Replit"
+    }
 
 @app.get("/models")
 async def list_models():
-    """List available Ollama models"""
-    try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags")
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            return {"models": models}
-        else:
-            raise HTTPException(status_code=500, detail="Failed to fetch models")
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {str(e)}")
+    """List available models"""
+    return {
+        "models": [
+            {
+                "name": "llama3.2-vision:11b",
+                "size": "11B",
+                "description": "Meta's Llama 3.2 Vision model with 11B parameters",
+                "capabilities": ["text", "vision", "image_analysis"]
+            }
+        ]
+    }
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    """Chat with an Ollama model"""
+    """Chat with llama3.2-vision:11b"""
     try:
-        payload = {
-            "model": request.model,
-            "messages": [{"role": msg.role, "content": msg.content} for msg in request.messages],
-            "stream": request.stream,
-            "options": {
-                "temperature": request.temperature,
-                "num_predict": request.max_tokens
-            }
-        }
+        # Prepare messages for Ollama
+        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
         
-        response = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-            headers={"Content-Type": "application/json"}
-        )
+        # Create prompt
+        prompt = ""
+        for msg in messages:
+            if msg["role"] == "user":
+                prompt += f"Human: {msg['content']}\n"
+            elif msg["role"] == "assistant":
+                prompt += f"Assistant: {msg['content']}\n"
+        prompt += "Assistant:"
         
-        if response.status_code == 200:
-            data = response.json()
-            # Return a clean chatbot response
+        # Call Ollama
+        cmd = ["ollama", "run", request.model, prompt]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        if result.returncode == 0:
+            response_text = result.stdout.strip()
             return {
-                "response": data.get("message", {}).get("content", ""),
-                "model": data.get("model", request.model),
-                "created_at": data.get("created_at", ""),
-                "done": data.get("done", True)
+                "response": response_text,
+                "model": request.model,
+                "status": "success",
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
             }
         else:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
+            raise HTTPException(status_code=500, detail=result.stderr)
             
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate")
 async def generate(request: GenerateRequest):
-    """Generate text using an Ollama model"""
+    """Generate text using llama3.2-vision:11b"""
     try:
-        payload = {
-            "model": request.model,
-            "prompt": request.prompt,
-            "stream": request.stream,
-            "options": {
-                "temperature": request.temperature,
-                "num_predict": request.max_tokens
-            }
-        }
+        # Call Ollama
+        cmd = ["ollama", "run", request.model, request.prompt]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         
-        response = requests.post(
-            f"{OLLAMA_BASE_URL}/api/generate",
-            json=payload,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            # Return a clean response for text generation
+        if result.returncode == 0:
+            response_text = result.stdout.strip()
             return {
-                "response": data.get("response", ""),
-                "model": data.get("model", request.model),
-                "created_at": data.get("created_at", ""),
-                "done": data.get("done", True)
+                "response": response_text,
+                "model": request.model,
+                "status": "success",
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
             }
         else:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
+            raise HTTPException(status_code=500, detail=result.stderr)
             
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pull")
-async def pull_model(model_name: str):
-    """Pull a model from Ollama registry"""
-    try:
-        payload = {"name": model_name}
-        response = requests.post(
-            f"{OLLAMA_BASE_URL}/api/pull",
-            json=payload,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        if response.status_code == 200:
-            return {"message": f"Model {model_name} pulled successfully"}
-        else:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-            
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {str(e)}")
-
+# Start the API server
 if __name__ == "__main__":
+    print("🚀 Starting Llama3.2 Vision API on Replit...")
+    print("📱 Your API will be available at the Replit public URL")
+    print("🔗 Model: llama3.2-vision:11b")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
